@@ -11,13 +11,9 @@ import calendar
 
 def _parse_price(price):
     """Парсинг цены в числовой формат"""
-
     if isinstance(price, (int, float)):
         price_val = float(price)
         return int(round(price_val))
-
-    if isinstance(price, (int, float)):
-        return int(round(float(price)))
     if pd.isna(price) or price == 'Цена не указана':
         return 0.0
     if 'бесплатно' in str(price).lower():
@@ -497,139 +493,166 @@ class AdvancedAnalysis:
              Input('forecast-method', 'value')]
         )
         def update_historical_forecast(period_years, method):
-            # Берем данные до 2020 года
-            historical_data = self.time_series[self.time_series.index < pd.to_datetime('2020-01-01')]
+            # Инициализируем переменные по умолчанию
+            fig = go.Figure()
+            stats = [html.P("Неизвестный метод прогнозирования")]
 
-            if len(historical_data) < 24:
-                return (
-                    px.line(title="Недостаточно данных для исторического прогноза"),
-                    dbc.Alert("Недостаточно данных для исторического прогноза", color="warning")
-                )
+            try:
+                # Берем данные за 2016-2020 годы
+                historical_data = self.time_series[
+                    (self.time_series.index >= pd.to_datetime('2016-01-01')) &
+                    (self.time_series.index < pd.to_datetime('2021-01-01'))
+                    ]
 
-            # Берем последние 4 года исторических данных (2016-2020)
-            last_date = pd.to_datetime('2020-01-01')
-            start_date_4y = last_date - pd.DateOffset(years=4)
-            historical_data = historical_data[historical_data.index >= start_date_4y]
+                if len(historical_data) < 24:
+                    return (
+                        px.line(title="Недостаточно данных для исторического прогноза"),
+                        dbc.Alert("Недостаточно данных для исторического прогноза", color="warning")
+                    )
 
-            # Создаем базовый график
-            fig = px.line(
-                x=historical_data.index,
-                y=historical_data.values,
-                title=f'Исторический прогноз на {period_years} лет (данные 2016-2020)',
-                labels={'x': 'Дата', 'y': 'Количество'}
-            )
+                # Разделяем на тренировочные (2016-2018) и тестовые (2019-2020) данные
+                train_data = historical_data[historical_data.index < pd.to_datetime('2019-01-01')]
+                test_data = historical_data[historical_data.index >= pd.to_datetime('2019-01-01')]
 
-            # Генерируем прогноз
-            forecast_dates = pd.date_range(
-                start=last_date + pd.DateOffset(months=1),
-                periods=period_years * 12,
-                freq='ME'
-            )
+                # Создаем базовый график
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=train_data.index,
+                    y=train_data.values,
+                    name='Тренировочные данные (2016-2018)',
+                    line=dict(color='blue')
+                ))
+                fig.add_trace(go.Scatter(
+                    x=test_data.index,
+                    y=test_data.values,
+                    name='Реальные данные (2019-2020)',
+                    line=dict(color='green')
+                ))
 
-            if method == 'linear':
-                # Линейная регрессия по годам
-                yearly_data = historical_data.resample('YE').count()
-                X = np.arange(len(yearly_data)).reshape(-1, 1)
-                y = yearly_data.values
+                if method == 'average':
+                    # Метод среднего роста
+                    monthly_growth = train_data.pct_change().mean()
+                    last_value = train_data.iloc[-1]
 
-                model = LinearRegression()
-                model.fit(X, y)
+                    forecast_dates = pd.date_range(
+                        start=pd.to_datetime('2019-01-01'),
+                        end=pd.to_datetime('2020-12-31'),
+                        freq='ME'
+                    )
 
-                # Прогнозируем будущие значения
-                future_X = np.arange(len(yearly_data), len(yearly_data) + period_years).reshape(-1, 1)
-                future_y = model.predict(future_X)
+                    forecast_values = [last_value * (1 + monthly_growth) ** i for i in
+                                       range(1, len(forecast_dates) + 1)]
 
-                # Добавляем прогноз на график
-                forecast_values = np.linspace(future_y[0], future_y[-1], len(forecast_dates))
-                fig.add_scatter(
-                    x=forecast_dates,
-                    y=forecast_values,
-                    mode='lines',
-                    name='Прогноз (линейный)',
-                    line=dict(color='red', dash='dash')
-                )
-
-                stats = [
-                    html.H5("Статистика линейного прогноза:"),
-                    html.P(f"Коэффициент роста: {model.coef_[0]:.2f} мероприятий/год"),
-                    html.P(f"Прогноз на {period_years} лет вперед: {future_y[-1]:.0f} мероприятий/год")
-                ]
-
-            elif method == 'average':
-                # Средний рост за последние годы
-                yearly_data = historical_data.resample('YE').count()
-                growth_rates = yearly_data.pct_change().dropna()
-                avg_growth = growth_rates.mean()
-
-                last_value = yearly_data.iloc[-1]
-                forecast_values = [last_value * (1 + avg_growth) ** i for i in range(1, period_years + 1)]
-
-                # Добавляем прогноз на график
-                forecast_yearly_dates = pd.date_range(
-                    start=last_date + pd.DateOffset(years=1),
-                    periods=period_years,
-                    freq='YE'
-                )
-
-                fig.add_scatter(
-                    x=forecast_yearly_dates,
-                    y=forecast_values,
-                    mode='lines+markers',
-                    name='Прогноз (средний рост)',
-                    line=dict(color='green', dash='dash')
-                )
-
-                stats = [
-                    html.H5("Статистика прогноза по среднему росту:"),
-                    html.P(f"Средний годовой рост: {avg_growth:.1%}"),
-                    html.P(f"Прогноз на {period_years} лет вперед: {forecast_values[-1]:.0f} мероприятий/год")
-                ]
-
-            else:  # seasonal
-                # Декомпозиция временного ряда
-                resampled = historical_data.resample('ME').mean().ffill()
-                try:
-                    decomposition = seasonal_decompose(resampled, model='additive', period=12)
-
-                    # Прогнозируем тренд
-                    trend = decomposition.trend.dropna()
-                    X = np.arange(len(trend)).reshape(-1, 1)
-                    y = trend.values
-
-                    trend_model = LinearRegression()
-                    trend_model.fit(X, y)
-
-                    # Прогнозируем будущий тренд
-                    future_X = np.arange(len(trend), len(trend) + period_years * 12).reshape(-1, 1)
-                    future_trend = trend_model.predict(future_X)
-
-                    # Добавляем сезонность
-                    seasonal = decomposition.seasonal[-12:].values  # Берем последний год сезонности
-                    future_seasonal = np.tile(seasonal, period_years)
-
-                    # Комбинируем тренд и сезонность
-                    forecast_values = future_trend + future_seasonal
-
-                    # Добавляем прогноз на график
-                    fig.add_scatter(
+                    fig.add_trace(go.Scatter(
                         x=forecast_dates,
                         y=forecast_values,
-                        mode='lines',
-                        name='Прогноз (сезонность+тренд)',
-                        line=dict(color='purple', dash='dash')
-                    )
+                        name='Прогноз (средний рост)',
+                        line=dict(color='orange', dash='dash')
+                    ))
+
+                    # Вычисляем ошибку прогноза
+                    actual_values = test_data.reindex(forecast_dates).fillna(0)
+                    mae = np.mean(np.abs(forecast_values - actual_values))
 
                     stats = [
-                        html.H5("Статистика прогноза с сезонностью:"),
-                        html.P(f"Тренд: {'возрастающий' if trend_model.coef_[0] > 0 else 'убывающий'}"),
-                        html.P(f"Средняя сезонная амплитуда: {np.abs(seasonal).mean():.1f} мероприятий"),
-                        html.P(f"Прогноз на {period_years} лет вперед: {forecast_values[-1]:.0f} мероприятий")
+                        html.H5("Метод среднего роста:"),
+                        html.P(f"Среднемесячный рост: {monthly_growth:.1%}"),
+                        html.P(f"Средняя ошибка прогноза: {mae:.1f} мероприятий в месяц"),
+                        html.P(f"Прогноз на {len(forecast_dates)} месяцев")
                     ]
-                except Exception as e:
-                    return (
-                        px.line(title=f"Ошибка при декомпозиции временного ряда: {str(e)}"),
-                        dbc.Alert(f"Ошибка при декомпозиции временного ряда: {str(e)}", color="danger")
+
+                elif method == 'linear':
+                    # Линейная регрессия
+                    X = np.arange(len(train_data)).reshape(-1, 1)
+                    y = train_data.values
+                    model = LinearRegression()
+                    model.fit(X, y)
+
+                    forecast_dates = pd.date_range(
+                        start=pd.to_datetime('2019-01-01'),
+                        end=pd.to_datetime('2020-12-31'),
+                        freq='ME'
                     )
+                    forecast_X = np.arange(len(train_data), len(train_data) + len(forecast_dates)).reshape(-1, 1)
+                    forecast_values = model.predict(forecast_X)
+
+                    fig.add_trace(go.Scatter(
+                        x=forecast_dates,
+                        y=forecast_values,
+                        name='Прогноз (линейный)',
+                        line=dict(color='red', dash='dash')
+                    ))
+
+                    actual_values = test_data.reindex(forecast_dates).fillna(0)
+                    mae = np.mean(np.abs(forecast_values - actual_values))
+
+                    stats = [
+                        html.H5("Линейная регрессия:"),
+                        html.P(f"Наклон: {model.coef_[0]:.2f} мероприятий/месяц"),
+                        html.P(f"Средняя ошибка прогноза: {mae:.1f} мероприятий в месяц"),
+                        html.P(f"Прогноз на {len(forecast_dates)} месяцев")
+                    ]
+
+                else:  # seasonal
+                    # Сезонная декомпозиция
+                    try:
+                        decomposition = seasonal_decompose(train_data, model='additive', period=12)
+
+                        trend = decomposition.trend.dropna()
+                        X = np.arange(len(trend)).reshape(-1, 1)
+                        y = trend.values
+
+                        trend_model = LinearRegression()
+                        trend_model.fit(X, y)
+
+                        forecast_dates = pd.date_range(
+                            start=pd.to_datetime('2019-01-01'),
+                            end=pd.to_datetime('2020-12-31'),
+                            freq='ME'
+                        )
+                        forecast_X = np.arange(len(trend), len(trend) + len(forecast_dates)).reshape(-1, 1)
+                        future_trend = trend_model.predict(forecast_X)
+
+                        seasonal = decomposition.seasonal[-12:].values
+                        future_seasonal = np.tile(seasonal, int(np.ceil(len(forecast_dates) / 12)))[
+                                          :len(forecast_dates)]
+
+                        forecast_values = future_trend.flatten() + future_seasonal
+
+                        fig.add_trace(go.Scatter(
+                            x=forecast_dates,
+                            y=forecast_values,
+                            name='Прогноз (сезонность+тренд)',
+                            line=dict(color='purple', dash='dash')
+                        ))
+
+                        actual_values = test_data.reindex(forecast_dates).fillna(0)
+                        mae = np.mean(np.abs(forecast_values - actual_values))
+
+                        stats = [
+                            html.H5("Сезонность + тренд:"),
+                            html.P(
+                                f"Тренд: {'↑' if trend_model.coef_[0] > 0 else '↓'} {abs(trend_model.coef_[0]):.2f}/мес"),
+                            html.P(f"Средняя ошибка прогноза: {mae:.1f} мероприятий в месяц"),
+                            html.P(f"Прогноз на {len(forecast_dates)} месяцев")
+                        ]
+                    except Exception as e:
+                        stats = [
+                            dbc.Alert(f"Ошибка сезонной декомпозиции: {str(e)}", color="danger")
+                        ]
+
+                fig.update_layout(
+                    title=f'Исторический прогноз (2016-2020) - метод {method}',
+                    xaxis_title='Дата',
+                    yaxis_title='Количество мероприятий',
+                    hovermode='x unified'
+                )
+
+            except Exception as e:
+                fig = px.line(title=f"Ошибка: {str(e)}")
+                stats = [
+                    dbc.Alert(f"Ошибка при построении прогноза: {str(e)}", color="danger")
+                ]
 
             return fig, stats
 
